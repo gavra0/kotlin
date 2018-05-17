@@ -37,7 +37,7 @@ class TestRootAffectedIT : BaseGradleIT() {
     @Test
     fun testSourceRootClassIsRemovedIC() {
         // todo: update Gradle after https://github.com/gradle/gradle/issues/3051 is resolved
-        val project = Project("kotlinProject", GradleVersionRequired.Exact("3.0"))
+        val project = Project("kotlinProject")
         val buildOptions = defaultBuildOptions().copy(incremental = true)
 
         project.build("build", options = buildOptions) {
