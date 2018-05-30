@@ -8,6 +8,7 @@ import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.psi.psiUtil.getParentOfType
 import org.jetbrains.kotlin.test.testFramework.KtUsefulTestCase
 import org.jetbrains.kotlin.utils.addToStdlib.cast
+import org.jetbrains.kotlin.utils.sure
 import org.jetbrains.uast.*
 import org.jetbrains.uast.kotlin.KotlinUastLanguagePlugin
 import org.jetbrains.uast.test.env.findElementByText
@@ -340,6 +341,22 @@ class KotlinUastApiTest : AbstractKotlinUastTest() {
         assertArguments(listOf("\"foo\"", "1"), "object : Parent(b = 1, a = \"foo\")\n")
     }
 
+    @Test
+    fun testResolvedDeserializedMethod() = doTest("Resolve") { _, file ->
+        val barMethod = file.findElementByTextFromPsi<UElement>("bar").getParentOfType<UMethod>()!!
+
+        fun UElement.assertResolveCall(callText: String, methodName: String = callText.substringBefore("(")) {
+            this.findElementByTextFromPsi<UCallExpression>(callText).let {
+                val resolve = it.resolve().sure { "resolving '$callText'" }
+                assertEquals(methodName, resolve.name)
+            }
+        }
+        barMethod.assertResolveCall("foo()")
+        barMethod.assertResolveCall("inlineFoo()")
+        barMethod.assertResolveCall("forEach { println(it) }", "forEach")
+        barMethod.assertResolveCall("joinToString()")
+        barMethod.assertResolveCall("last()")
+    }
 }
 
 fun <T, R> Iterable<T>.assertedFind(value: R, transform: (T) -> R): T =

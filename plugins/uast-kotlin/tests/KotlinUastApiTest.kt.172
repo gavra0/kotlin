@@ -194,4 +194,22 @@ class KotlinUastApiTest : AbstractKotlinUastTest() {
             Assert.assertTrue((originalTypeParameters.declarations.single() as UParameter).type.isValid)
         }
     }
+
+    @Test
+    fun testResolvedDeserializedMethod() = doTest("Resolve") { _, file ->
+        val barMethod = file.findElementByTextFromPsi<UElement>("bar").sourcePsiElement.sure { "sourceElement" }
+            .parentsWithSelf.mapNotNull { it.toUElementOfType<UMethod>() }.firstOrNull().sure { "parent UMethod" }
+
+        fun UElement.assertResolveCall(callText: String, methodName: String = callText.substringBefore("(")) {
+            this.findElementByTextFromPsi<UCallExpression>(callText).let {
+                val resolve = it.resolve().sure { "resolving '$callText'" }
+                assertEquals(methodName, resolve.name)
+            }
+        }
+        barMethod.assertResolveCall("foo()")
+        barMethod.assertResolveCall("inlineFoo()")
+        barMethod.assertResolveCall("forEach { println(it) }", "forEach")
+        barMethod.assertResolveCall("joinToString()")
+        barMethod.assertResolveCall("last()")
+    }
 }
