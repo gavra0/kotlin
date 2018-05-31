@@ -37,8 +37,12 @@ import org.jetbrains.kotlin.descriptors.ConstructorDescriptor
 import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
 import org.jetbrains.kotlin.descriptors.TypeAliasDescriptor
 import org.jetbrains.kotlin.idea.project.languageVersionSettings
-import org.jetbrains.kotlin.load.kotlin.JvmPackagePartSource
+import org.jetbrains.kotlin.load.java.lazy.descriptors.LazyJavaPackageFragment
+import org.jetbrains.kotlin.load.kotlin.KotlinJvmBinaryPackageSourceElement
 import org.jetbrains.kotlin.load.kotlin.TypeMappingMode
+import org.jetbrains.kotlin.metadata.ProtoBuf
+import org.jetbrains.kotlin.metadata.deserialization.getExtensionOrNull
+import org.jetbrains.kotlin.metadata.jvm.JvmProtoBuf
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.resolve.BindingContext
 import org.jetbrains.kotlin.resolve.DescriptorToSourceUtils
@@ -46,7 +50,8 @@ import org.jetbrains.kotlin.resolve.DescriptorUtils
 import org.jetbrains.kotlin.resolve.calls.callUtil.getResolvedCall
 import org.jetbrains.kotlin.resolve.constants.IntegerValueTypeConstructor
 import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
-import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedCallableMemberDescriptor
+import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedClassDescriptor
 import org.jetbrains.kotlin.types.KotlinType
 import org.jetbrains.kotlin.types.TypeApproximator
 import org.jetbrains.kotlin.types.TypeUtils
@@ -64,9 +69,9 @@ internal inline fun String?.orAnonymous(kind: String = ""): String = this ?: "<a
 internal fun DeclarationDescriptor.toSource(): PsiElement? {
     return try {
         DescriptorToSourceUtils.getEffectiveReferencedDescriptors(this)
-                .asSequence()
-                .mapNotNull { DescriptorToSourceUtils.getSourceFromDescriptor(it) }
-                .firstOrNull()
+            .asSequence()
+            .mapNotNull { DescriptorToSourceUtils.getSourceFromDescriptor(it) }
+            .firstOrNull()
     }
     catch (e: Exception) {
         Logger.getInstance("DeclarationDescriptor.toSource").error(e)
@@ -92,12 +97,31 @@ internal fun resolveSource(context: KtElement, descriptor: DeclarationDescriptor
 }
 
 private fun resolveDeserialized(context: KtElement, descriptor: DeclarationDescriptor): PsiMethod? {
-    if (descriptor !is DeserializedSimpleFunctionDescriptor) return null
-    val knownJvmBinaryClass = (descriptor.containerSource as? JvmPackagePartSource)?.knownJvmBinaryClass ?: return null
-    val containingClassQualifiedName = knownJvmBinaryClass.classId.asSingleFqName().asString()
-    val psiClass = JavaPsiFacade.getInstance(context.project).findClass(containingClassQualifiedName, context.resolveScope) ?: return null
+    if (descriptor !is DeserializedCallableMemberDescriptor) return null
 
-    val methodsMatchedByName = psiClass.methods.filter { it.name == descriptor.name.toString() }
+    val containingDeclaration = descriptor.containingDeclaration
+    val psiClass = when (containingDeclaration) {
+        is LazyJavaPackageFragment -> {
+            val binaryPackageSourceElement = containingDeclaration.source as? KotlinJvmBinaryPackageSourceElement ?: return null
+            val containingBinaryClass = binaryPackageSourceElement.getContainingBinaryClass(descriptor) ?: return null
+            val containingClassQualifiedName = containingBinaryClass.classId.asSingleFqName().asString()
+            JavaPsiFacade.getInstance(context.project).findClass(containingClassQualifiedName, context.resolveScope) ?: return null
+        }
+        is DeserializedClassDescriptor ->
+            (containingDeclaration.defaultType.toPsiType(null, context, false) as? PsiClassType)?.resolve() ?: return null
+        else -> return null
+    }
+
+    val methodNameToSearch = run {
+        val function = descriptor.proto as? ProtoBuf.Function ?: return null
+        val nameResolver = descriptor.nameResolver
+
+        val signature = function.getExtensionOrNull(JvmProtoBuf.methodSignature)
+
+        nameResolver.getString(if (signature != null && signature.hasName()) signature.name else function.name)
+    }
+
+    val methodsMatchedByName = psiClass.methods.filter { it.name == methodNameToSearch }
 
     if (methodsMatchedByName.isEmpty()) return null
     if (methodsMatchedByName.size == 1) return methodsMatchedByName.single()
@@ -215,8 +239,8 @@ internal fun PsiElement.getMaybeLightElement(context: UElement): PsiElement? {
 }
 
 internal fun KtElement.resolveCallToDeclaration(
-        context: KotlinAbstractUElement,
-        resultingDescriptor: DeclarationDescriptor? = null
+    context: KotlinAbstractUElement,
+    resultingDescriptor: DeclarationDescriptor? = null
 ): PsiElement? {
     val descriptor = resultingDescriptor ?: run {
         val resolvedCall = getResolvedCall(analyze()) ?: return null
@@ -238,7 +262,7 @@ internal fun KtExpression.unwrapBlockOrParenthesis(): KtExpression {
 internal fun KtElement.analyze(): BindingContext {
     if(containingFile !is KtFile) return BindingContext.EMPTY // EA-114080, EA-113475
     return ServiceManager.getService(project, KotlinUastBindingContextProviderService::class.java)
-            ?.getBindingContext(this) ?: BindingContext.EMPTY
+        ?.getBindingContext(this) ?: BindingContext.EMPTY
 }
 
 internal inline fun <reified T : UDeclaration, reified P : PsiElement> unwrap(element: P): P {
@@ -252,7 +276,7 @@ internal fun KtExpression.getExpectedType(): KotlinType? = analyze()[BindingCont
 internal fun KtTypeReference.getType(): KotlinType? = analyze()[BindingContext.TYPE, this]
 
 internal fun KotlinType.getFunctionalInterfaceType(source: UElement, element: KtElement): PsiType? =
-        takeIf { it.isInterface() && !it.isBuiltinFunctionalTypeOrSubtype }?.toPsiType(source, element, false)
+    takeIf { it.isInterface() && !it.isBuiltinFunctionalTypeOrSubtype }?.toPsiType(source, element, false)
 
 internal fun KotlinULambdaExpression.getFunctionalInterfaceType(): PsiType? {
     val parent = psi.parent

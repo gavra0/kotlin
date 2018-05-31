@@ -356,6 +356,8 @@ class KotlinUastApiTest : AbstractKotlinUastTest() {
         barMethod.assertResolveCall("forEach { println(it) }", "forEach")
         barMethod.assertResolveCall("joinToString()")
         barMethod.assertResolveCall("last()")
+        barMethod.assertResolveCall("setValue(\"123\")")
+        barMethod.assertResolveCall("contains(2 as Int)", "longRangeContains")
     }
 }
 
