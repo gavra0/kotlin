@@ -107,26 +107,31 @@ private fun resolveDeserialized(context: KtElement, descriptor: DeclarationDescr
             val containingClassQualifiedName = containingBinaryClass.classId.asSingleFqName().asString()
             JavaPsiFacade.getInstance(context.project).findClass(containingClassQualifiedName, context.resolveScope) ?: return null
         }
-        is DeserializedClassDescriptor ->
-            (containingDeclaration.defaultType.toPsiType(null, context, false) as? PsiClassType)?.resolve() ?: return null
+        is DeserializedClassDescriptor -> {
+            val declaredPsiType = containingDeclaration.defaultType.toPsiType(null, context, false)
+            (declaredPsiType as? PsiClassType)?.resolve() ?: return null
+        }
         else -> return null
     }
 
-    val methodNameToSearch = run {
-        val function = descriptor.proto as? ProtoBuf.Function ?: return null
-        val nameResolver = descriptor.nameResolver
+    val proto = descriptor.proto
 
-        val signature = function.getExtensionOrNull(JvmProtoBuf.methodSignature)
-
-        nameResolver.getString(if (signature != null && signature.hasName()) signature.name else function.name)
+    val methodsMatchedByName = when (proto) {
+        is ProtoBuf.Function -> {
+            val nameResolver = descriptor.nameResolver
+            val signature = proto.getExtensionOrNull(JvmProtoBuf.methodSignature)
+            val nameIndex = if (signature != null && signature.hasName()) signature.name else proto.name
+            val methodNameToSearch = nameResolver.getString(nameIndex)
+            psiClass.methods.filter { it.name == methodNameToSearch }
+        }
+        is ProtoBuf.Constructor -> psiClass.constructors.toList()
+        else -> return null
     }
-
-    val methodsMatchedByName = psiClass.methods.filter { it.name == methodNameToSearch }
 
     if (methodsMatchedByName.isEmpty()) return null
     if (methodsMatchedByName.size == 1) return methodsMatchedByName.single()
 
-    fun PsiType.raw() = (this as? PsiClassType)?.rawType() ?: this
+    fun PsiType.raw() = (this as? PsiClassType)?.rawType() ?: PsiPrimitiveType.getUnboxedType(this) ?: this
     fun KotlinType.toPsiType() = toPsiType(null, context, false).raw()
 
     val receiverType = descriptor.extensionReceiverParameter?.type?.toPsiType()
