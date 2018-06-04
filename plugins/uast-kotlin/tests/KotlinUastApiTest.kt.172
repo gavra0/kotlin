@@ -5,8 +5,10 @@ import com.intellij.testFramework.UsefulTestCase
 import org.jetbrains.kotlin.asJava.toLightAnnotation
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.psi.psiUtil.getParentOfType
+import org.jetbrains.kotlin.psi.psiUtil.parentsWithSelf
 import org.jetbrains.kotlin.test.testFramework.KtUsefulTestCase
 import org.jetbrains.kotlin.utils.addToStdlib.cast
+import org.jetbrains.kotlin.utils.sure
 import org.jetbrains.uast.*
 import org.jetbrains.uast.kotlin.KotlinUastLanguagePlugin
 import org.jetbrains.uast.test.env.findElementByText
@@ -197,7 +199,7 @@ class KotlinUastApiTest : AbstractKotlinUastTest() {
 
     @Test
     fun testResolvedDeserializedMethod() = doTest("Resolve") { _, file ->
-        val barMethod = file.findElementByTextFromPsi<UElement>("bar").sourcePsiElement.sure { "sourceElement" }
+        val barMethod = file.psi.findElementAt(file.psi.text.indexOf("bar")).sure { "sourceElement" }
             .parentsWithSelf.mapNotNull { it.toUElementOfType<UMethod>() }.firstOrNull().sure { "parent UMethod" }
 
         fun UElement.assertResolveCall(callText: String, methodName: String = callText.substringBefore("(")) {
