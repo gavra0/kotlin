@@ -32,17 +32,14 @@ import org.jetbrains.kotlin.asJava.toLightClass
 import org.jetbrains.kotlin.asJava.toLightElements
 import org.jetbrains.kotlin.builtins.isBuiltinFunctionalTypeOrSubtype
 import org.jetbrains.kotlin.codegen.signature.BothSignatureWriter
-import org.jetbrains.kotlin.descriptors.ClassDescriptor
-import org.jetbrains.kotlin.descriptors.ConstructorDescriptor
-import org.jetbrains.kotlin.descriptors.DeclarationDescriptor
-import org.jetbrains.kotlin.descriptors.TypeAliasDescriptor
+import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.idea.project.languageVersionSettings
 import org.jetbrains.kotlin.load.java.lazy.descriptors.LazyJavaPackageFragment
 import org.jetbrains.kotlin.load.kotlin.KotlinJvmBinaryPackageSourceElement
 import org.jetbrains.kotlin.load.kotlin.TypeMappingMode
 import org.jetbrains.kotlin.metadata.ProtoBuf
-import org.jetbrains.kotlin.metadata.deserialization.getExtensionOrNull
-import org.jetbrains.kotlin.metadata.jvm.JvmProtoBuf
+import org.jetbrains.kotlin.metadata.jvm.deserialization.JvmMemberSignature
+import org.jetbrains.kotlin.metadata.jvm.deserialization.JvmProtoBufUtil
 import org.jetbrains.kotlin.psi.*
 import org.jetbrains.kotlin.resolve.BindingContext
 import org.jetbrains.kotlin.resolve.DescriptorToSourceUtils
@@ -52,10 +49,8 @@ import org.jetbrains.kotlin.resolve.constants.IntegerValueTypeConstructor
 import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
 import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedCallableMemberDescriptor
 import org.jetbrains.kotlin.serialization.deserialization.descriptors.DeserializedClassDescriptor
-import org.jetbrains.kotlin.types.KotlinType
-import org.jetbrains.kotlin.types.TypeApproximator
-import org.jetbrains.kotlin.types.TypeUtils
-import org.jetbrains.kotlin.types.isError
+import org.jetbrains.kotlin.type.MapPsiToAsmDesc
+import org.jetbrains.kotlin.types.*
 import org.jetbrains.kotlin.types.typeUtil.isInterface
 import org.jetbrains.uast.*
 import java.lang.ref.WeakReference
@@ -114,38 +109,49 @@ private fun resolveDeserialized(context: KtElement, descriptor: DeclarationDescr
         else -> return null
     }
 
+
     val proto = descriptor.proto
+    val nameResolver = descriptor.nameResolver
+    val typeTable = descriptor.typeTable
 
-    val methodsMatchedByName = when (proto) {
+    return when (proto) {
         is ProtoBuf.Function -> {
-            val nameResolver = descriptor.nameResolver
-            val signature = proto.getExtensionOrNull(JvmProtoBuf.methodSignature)
-            val nameIndex = if (signature != null && signature.hasName()) signature.name else proto.name
-            val methodNameToSearch = nameResolver.getString(nameIndex)
-            psiClass.methods.filter { it.name == methodNameToSearch }
+            val signature = JvmProtoBufUtil.getJvmMethodSignature(proto, nameResolver, typeTable)
+                    ?: getMethodSignatureFromDescriptor(context, descriptor)
+                    ?: return null
+
+            psiClass.methods.firstOrNull { it.name == signature.name && it.matches(signature.desc) }
         }
-        is ProtoBuf.Constructor -> psiClass.constructors.toList()
-        else -> return null
+        is ProtoBuf.Constructor -> {
+            val signature = JvmProtoBufUtil.getJvmConstructorSignature(proto, nameResolver, typeTable)
+                    ?: getMethodSignatureFromDescriptor(context, descriptor)
+                    ?: return null
+
+            psiClass.constructors.firstOrNull { it.matches(signature.desc) }
+        }
+        else -> null
     }
+}
 
-    if (methodsMatchedByName.isEmpty()) return null
-    if (methodsMatchedByName.size == 1) return methodsMatchedByName.single()
+fun PsiMethod.matches(desc: String) = desc == buildString {
+    parameterList.parameters.joinTo(this, separator = "", prefix = "(", postfix = ")") { MapPsiToAsmDesc.typeDesc(it.type) }
+    append(MapPsiToAsmDesc.typeDesc(returnType ?: PsiType.VOID))
+}
 
+private fun getMethodSignatureFromDescriptor(context: KtElement, descriptor: CallableDescriptor): JvmMemberSignature? {
     fun PsiType.raw() = (this as? PsiClassType)?.rawType() ?: PsiPrimitiveType.getUnboxedType(this) ?: this
     fun KotlinType.toPsiType() = toPsiType(null, context, false).raw()
 
-    val receiverType = descriptor.extensionReceiverParameter?.type?.toPsiType()
-    val descriptorParametersTypes = listOfNotNull(receiverType) + descriptor.valueParameters.map { it.type.toPsiType() }
+    val originalDescriptor = descriptor.original
+    val receiverType = originalDescriptor.extensionReceiverParameter?.type?.toPsiType()
+    val parameterTypes = listOfNotNull(receiverType) + originalDescriptor.valueParameters.map { it.type.toPsiType() }
+    val returnType = originalDescriptor.returnType?.toPsiType() ?: PsiType.VOID
 
-    for (psiMethod in methodsMatchedByName) {
-        val candidateTypes = psiMethod.parameterList.parameters.map { it.type.raw() }
-        if (candidateTypes == descriptorParametersTypes)
-            return psiMethod
-    }
+    val desc = parameterTypes.joinToString("", prefix = "(", postfix = ")") { MapPsiToAsmDesc.typeDesc(it) } +
+            MapPsiToAsmDesc.typeDesc(returnType)
 
-    return null
+    return JvmMemberSignature.Method(descriptor.name.asString(), desc)
 }
-
 
 internal fun <T> lz(initializer: () -> T) = lazy(LazyThreadSafetyMode.SYNCHRONIZED, initializer)
 
@@ -157,6 +163,10 @@ internal fun KotlinType.toPsiType(lightDeclaration: PsiModifierListOwner?, conte
 
     (constructor.declarationDescriptor as? TypeAliasDescriptor)?.let { typeAlias ->
         return typeAlias.expandedType.toPsiType(lightDeclaration, context, boxed)
+    }
+
+    (constructor.declarationDescriptor as? TypeParameterDescriptor)?.let { typeParameter ->
+        return CommonSupertypes.commonSupertype(typeParameter.upperBounds).toPsiType(lightDeclaration, context, boxed)
     }
 
     if (arguments.isEmpty()) {
