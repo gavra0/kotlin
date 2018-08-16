@@ -771,6 +771,10 @@ abstract class AbstractAndroidProjectHandler<V>(private val kotlinConfigurationT
 
 internal fun configureJavaTask(kotlinTask: KotlinCompile, javaTask: AbstractCompile, logger: Logger) {
     kotlinTask.javaOutputDir = javaTask.destinationDir
+    if (maybeCompileJavaWithKotlinc(kotlinTask, javaTask)) {
+        // early return, no need to additionally configure javaTask, as it won't run
+        return
+    }
 
     // Make Gradle check if the javaTask is up-to-date based on the Kotlin classes
     javaTask.inputsCompatible.run {
@@ -794,6 +798,17 @@ internal fun configureJavaTask(kotlinTask: KotlinCompile, javaTask: AbstractComp
      * so it's only safe to modify javaTask.classpath right before its usage
      */
     javaTask.appendClasspathDynamically(kotlinTask.destinationDir!!)
+}
+
+/** If kotlin compilation should compile java sources. */
+fun maybeCompileJavaWithKotlinc(kotlinTask: KotlinCompile, javaTask: AbstractCompile): Boolean {
+    if (kotlinTask.compileJava) {
+        (javaTask as? JavaCompile)?.let {
+            kotlinTask.javacArguments = javaTask.options.allCompilerArgs.toTypedArray()
+        }
+        javaTask.enabled = false
+    }
+    return kotlinTask.compileJava
 }
 
 internal fun syncOutputTaskName(variantName: String) = "copy${variantName.capitalize()}KotlinClasses"

@@ -33,6 +33,7 @@ fun mapKotlinTaskProperties(project: Project, task: AbstractKotlinCompile<*>) {
             usePreciseJavaTracking?.let {
                 task.usePreciseJavaTracking = it
             }
+            compileJava?.let { task.compileJava = it }
         }
 
         if (task is Kotlin2JsCompile) {
@@ -70,6 +71,9 @@ internal class PropertiesProvider(private val project: Project) {
 
     val useFallbackCompilerSearch: Boolean?
         get() = booleanProperty("kotlin.useFallbackCompilerSearch")
+
+    val compileJava: Boolean?
+        get() = booleanProperty("kotlin.compileJava")
 
     private fun booleanProperty(propName: String): Boolean? =
             property(propName)?.toBoolean()

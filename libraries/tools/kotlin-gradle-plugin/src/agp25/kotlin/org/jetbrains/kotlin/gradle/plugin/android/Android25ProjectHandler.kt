@@ -72,6 +72,8 @@ class Android25ProjectHandler(kotlinConfigurationTools: KotlinConfigurationTools
                     .map { it.file.absolutePath }
                     .toTypedArray()
         }
+
+        maybeCompileJavaWithKotlinc(kotlinTask, javaTask)
     }
 
     override fun getSourceProviders(variantData: BaseVariant): Iterable<SourceProvider> =

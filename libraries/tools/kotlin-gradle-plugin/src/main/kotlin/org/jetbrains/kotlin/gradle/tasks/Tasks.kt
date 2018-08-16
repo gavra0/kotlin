@@ -316,6 +316,12 @@ open class KotlinCompile : AbstractKotlinCompile<K2JVMCompilerArguments>(), Kotl
             logger.kotlinDebug { "Set $this.usePreciseJavaTracking=$value" }
         }
 
+    @get: Input
+    var compileJava: Boolean = false
+
+    @get: Input
+    var javacArguments: Array<String> = arrayOf()
+
     init {
         incremental = true
     }
@@ -349,6 +355,12 @@ open class KotlinCompile : AbstractKotlinCompile<K2JVMCompilerArguments>(), Kotl
         args.destinationAsFile = destinationDir
         parentKotlinOptionsImpl?.updateArguments(args)
         kotlinOptionsImpl.updateArguments(args)
+
+        if (compileJava) {
+            args.useJavac = true
+            args.compileJava = true
+            args.javacArguments = arrayOf("-proc:none", *javacArguments)
+        }
 
         logger.kotlinDebug { "$name destinationDir = $destinationDir" }
     }

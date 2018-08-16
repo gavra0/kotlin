@@ -76,6 +76,10 @@ open class KaptGenerateStubsTask : KotlinCompile() {
         args.verbose = project.hasProperty("kapt.verbose") && project.property("kapt.verbose").toString().toBoolean() == true
         args.classpathAsList = this.compileClasspath.toList()
         args.destinationAsFile = this.destinationDir
+
+        args.useJavac = false
+        args.compileJava = false
+        args.javacArguments = arrayOf()
     }
 
     override fun execute(inputs: IncrementalTaskInputs) {
