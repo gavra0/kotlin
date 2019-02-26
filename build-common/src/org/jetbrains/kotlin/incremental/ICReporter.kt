@@ -26,6 +26,8 @@ interface ICReporter {
     @Suppress("unused")
     fun reportCompileIteration(sourceFiles: Collection<File>, exitCode: ExitCode) {}
 
+    fun reportImportant(s: String) {}
+
     fun pathsAsString(files: Iterable<File>): String =
             files.joinToString { it.canonicalPath }
 

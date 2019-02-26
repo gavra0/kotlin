@@ -27,7 +27,11 @@ class KaptOptions(
     val flags: KaptFlags,
 
     val mode: AptMode,
-    val detectMemoryLeaks: DetectMemoryLeaksMode
+    val detectMemoryLeaks: DetectMemoryLeaksMode,
+
+    val incrementalAnnotationProcessing: File?,
+    val sourcesToReprocess: File?,
+    val kotlinCompiledClasses: List<File>
 ) : KaptFlags {
     override fun get(flag: KaptFlag) = flags[flag]
 
@@ -55,6 +59,10 @@ class KaptOptions(
         var mode: AptMode = AptMode.WITH_COMPILATION
         var detectMemoryLeaks: DetectMemoryLeaksMode = DetectMemoryLeaksMode.DEFAULT
 
+        var incrementalAnnotationProcessing: File? = null
+        var sourcesToReprocess: File? = null
+        val kotlinCompiledClasses = mutableListOf<File>()
+
         fun build(): KaptOptions {
             val sourcesOutputDir = this.sourcesOutputDir ?: error("'sourcesOutputDir' must be set")
             val classesOutputDir = this.classesOutputDir ?: error("'classesOutputDir' must be set")
@@ -64,7 +72,10 @@ class KaptOptions(
                 projectBaseDir, compileClasspath, javaSourceRoots,
                 sourcesOutputDir, classesOutputDir, stubsOutputDir, incrementalDataOutputDir,
                 processingClasspath, processors, processingOptions, javacOptions, KaptFlags.fromSet(flags),
-                mode, detectMemoryLeaks
+                mode, detectMemoryLeaks,
+                incrementalAnnotationProcessing,
+                sourcesToReprocess,
+                kotlinCompiledClasses
             )
         }
     }
@@ -117,11 +128,15 @@ enum class AptMode(override val stringValue: String) : KaptSelector {
 }
 
 fun KaptOptions.collectJavaSourceFiles(): List<File> {
-    return (javaSourceRoots + stubsOutputDir)
-        .sortedBy { Files.isSymbolicLink(it.toPath()) } // Get non-symbolic paths first
-        .flatMap { root -> root.walk().filter { it.isFile && it.extension == "java" }.toList() }
-        .sortedBy { Files.isSymbolicLink(it.toPath()) } // This time is for .java files
-        .distinctBy { it.canonicalPath }
+    return if (sourcesToReprocess != null && sourcesToReprocess.isFile) {
+        sourcesToReprocess.bufferedReader().readLines().map { File(it) }
+    } else {
+        (javaSourceRoots + stubsOutputDir)
+            .sortedBy { Files.isSymbolicLink(it.toPath()) } // Get non-symbolic paths first
+            .flatMap { root -> root.walk().filter { it.isFile && it.extension == "java" }.toList() }
+            .sortedBy { Files.isSymbolicLink(it.toPath()) } // This time is for .java files
+            .distinctBy { it.canonicalPath }
+    }
 }
 
 fun KaptOptions.logString(additionalInfo: String = "") = buildString {

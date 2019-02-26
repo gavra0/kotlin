@@ -5,7 +5,7 @@
 
 package org.jetbrains.kotlin.kapt3.base
 
-import com.sun.tools.javac.comp.CompileStates.*
+import com.sun.tools.javac.comp.CompileStates.CompileState
 import com.sun.tools.javac.main.JavaCompiler
 import com.sun.tools.javac.processing.AnnotationProcessingError
 import com.sun.tools.javac.processing.JavacFiler
@@ -16,6 +16,8 @@ import org.jetbrains.kotlin.kapt3.base.util.KaptBaseError
 import org.jetbrains.kotlin.kapt3.base.util.isJava9OrLater
 import org.jetbrains.kotlin.kapt3.base.util.measureTimeMillisWithResult
 import java.io.File
+import java.io.ObjectInputStream
+import java.io.ObjectOutputStream
 import javax.annotation.processing.ProcessingEnvironment
 import javax.annotation.processing.Processor
 import javax.annotation.processing.RoundEnvironment
@@ -27,11 +29,15 @@ import com.sun.tools.javac.util.List as JavacList
 
 fun KaptContext.doAnnotationProcessing(
     javaSourceFiles: List<File>,
-    processors: List<Processor>,
+    processors: List<IncrementalProcessor>,
     additionalSources: JavacList<JCTree.JCCompilationUnit> = JavacList.nil()
 ) {
     val processingEnvironment = JavacProcessingEnvironment.instance(context)
     val wrappedProcessors = processors.map { ProcessorWrapper(it) }
+
+    val incrementalProcessing = options.incrementalAnnotationProcessing?.let{
+        IncrementalAnnotationProcessing(it)
+    }
 
     val compilerAfterAP: JavaCompiler
     try {
@@ -42,7 +48,10 @@ fun KaptContext.doAnnotationProcessing(
             compiler.initProcessAnnotations(wrappedProcessors)
         }
 
-        val parsedJavaFiles = parseJavaFiles(javaSourceFiles)
+        val additionalFiles = incrementalProcessing?.getAdditionalFiles(javaSourceFiles.toSet()) ?: emptySet()
+
+        val filesToProcess = javaSourceFiles + additionalFiles.toList()
+        val parsedJavaFiles = parseJavaFiles(filesToProcess)
 
         compilerAfterAP = try {
             javaLog.interceptorData.files = parsedJavaFiles.map { it.sourceFile to it }.toMap()
@@ -84,9 +93,99 @@ fun KaptContext.doAnnotationProcessing(
         if (log.nerrors > 0) {
             throw KaptBaseError(KaptBaseError.Kind.ERROR_RAISED)
         }
+
+        // get full cache state after this run
+        if (incrementalProcessing != null && processors.all { it.isIncremental() }) {
+            val (aggregating, isolating) =
+                    processors.map { it.getDependencyInfo() }.partition { it.runtimeProcType == RuntimeProcType.AGGREGATING }
+
+            // changing any of these, should re-run annotation processing for all origins, and remove all aggregatingGenerated
+            val aggregatingOrigins: Set<File> = aggregating.flatMap { it.getDependencies().keys }.toSet()
+            val aggregatingGenerated = mutableSetOf<File>()
+            aggregating.forEach { deps ->
+                deps.getDependencies().values.forEach { aggregatingGenerated.addAll(it) }
+            }
+
+            // changing any of these should re-run annotation processing for those files, and remove files that were generated from them
+            val isolatingMapping = mutableMapOf<File, MutableSet<File>>()
+            isolating.forEach { deps ->
+                deps.getDependencies().forEach {
+                    val generated = isolatingMapping.getOrDefault(it.key, mutableSetOf())
+                    generated.addAll(it.value)
+                    isolatingMapping[it.key] = generated
+                }
+            }
+
+            incrementalProcessing.updateState(aggregatingOrigins, aggregatingGenerated, isolatingMapping)
+        }
     } finally {
         processingEnvironment.close()
         this@doAnnotationProcessing.close()
+        incrementalProcessing?.storeDependencyData()
+    }
+}
+
+private class IncrementalAnnotationProcessing(stateDir: File) {
+
+    private val aggregatingOrigins: MutableSet<File>
+    private val aggregatingGenerated: MutableSet<File>
+    private val isolatingMapping: MutableMap<File, MutableSet<File>>
+
+    val originsFile = stateDir.resolve("aggregating-origins.txt")
+    val generatedFile = stateDir.resolve("aggregating-generated.txt")
+    val isolatingFile = stateDir.resolve("isolating.txt")
+
+    init {
+        if (!originsFile.exists() || !generatedFile.exists() || !isolatingFile.exists()) {
+            aggregatingOrigins = mutableSetOf()
+            aggregatingGenerated = mutableSetOf()
+            isolatingMapping = mutableMapOf()
+        } else {
+            aggregatingOrigins = originsFile.readText().split(File.pathSeparator).map { File(it) }.toMutableSet()
+            aggregatingGenerated = generatedFile.readText().split(File.pathSeparator).map { File(it) }.toMutableSet()
+
+            isolatingMapping =  ObjectInputStream(isolatingFile.inputStream()).use {
+                @Suppress("UNCHECKED_CAST")
+                it.readObject() as MutableMap<File, MutableSet<File>>
+            }
+        }
+        originsFile.delete()
+        generatedFile.delete()
+        isolatingFile.delete()
+        stateDir.mkdirs()
+    }
+
+    fun getAdditionalFiles(sources: Set<File>): Set<File> {
+        val additionalSources = mutableSetOf<File>()
+
+        if (sources.any { aggregatingOrigins.contains(it) }) {
+            val unchangedAggregating = aggregatingOrigins.filter { !sources.contains(it) }
+            additionalSources.addAll(unchangedAggregating)
+            aggregatingGenerated.forEach { it.delete() }
+        }
+        sources.mapNotNull { isolatingMapping[it] }.flatMap { it }.forEach { it.delete() }
+
+        return mutableSetOf()
+    }
+
+    internal fun updateState(newOrigins: Set<File>, newGenerated: Set<File>, newIsolating: Map<File, MutableSet<File>>) {
+        aggregatingOrigins.clear()
+        aggregatingOrigins.addAll(newOrigins)
+
+        aggregatingGenerated.clear()
+        aggregatingGenerated.addAll(newGenerated)
+
+        for (isolating in newIsolating) {
+            isolatingMapping[isolating.key] = isolating.value
+        }
+    }
+
+    internal fun storeDependencyData() {
+        originsFile.writeText(aggregatingOrigins.joinToString(separator = File.pathSeparator))
+        generatedFile.writeText(aggregatingGenerated.joinToString(separator = File.pathSeparator))
+        ObjectOutputStream(isolatingFile.outputStream()).use {
+            it.writeObject(isolatingMapping)
+        }
     }
 }
 

@@ -267,6 +267,13 @@ class K2JVMCompilerArguments : CommonCompilerArguments() {
     )
     var friendPaths: Array<String>? by FreezableVar(null)
 
+    @Argument(
+        value = "-Xsources-to-reprocess-with-ap",
+        valueDescription = "<path>",
+        description = "Path to a file which contains source files (one per line) that should be reprocessed using annotation processors"
+    )
+    var sourcesToReprocessWithAP: String? by NullableStringFreezableVar(null)
+
     override fun configureAnalysisFlags(collector: MessageCollector): MutableMap<AnalysisFlag<*>, Any> {
         val result = super.configureAnalysisFlags(collector)
         result[JvmAnalysisFlags.strictMetadataVersionSemantics] = strictMetadataVersionSemantics

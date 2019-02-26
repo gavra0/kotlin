@@ -69,6 +69,29 @@ enum class KaptCliOption(
 
     INCREMENTAL_DATA_OUTPUT_DIR_OPTION("incrementalData", "<path>", "Output path for incremental data"),
 
+    INCREMENTAL_ANNOTATION_PROCESSING_CACHE(
+        "incrementalAnnotationProcessingCache",
+        "<path>",
+        "Output directory for incremental annotation processing cache"
+    ),
+
+    SOURCES_TO_REPROCESS(
+        "sourcesToReprocess",
+        "<path>",
+        """Used to support incremental annotation processing. It is a file containing source paths (one per line) to be reprocessed with
+            |annotation processors. If generating sources, this will be an output, and it will contain computed set of sources that
+            |need to be reprocessed. This will be a superset of changed files. If running annotation processors, this file
+            |is used as input to determine which files to reprocess.
+        """.trimMargin()
+    ),
+
+    KOTLIN_COMPILED_CLASSES(
+        "kotlinCompiledClasses",
+        "<path>",
+        "Used to support incremental annotation processing. These are compiled Kotlin classes from previous compilations",
+        true
+    ),
+
     ANNOTATION_PROCESSOR_CLASSPATH_OPTION(
         "apclasspath",
         "<classpath>",

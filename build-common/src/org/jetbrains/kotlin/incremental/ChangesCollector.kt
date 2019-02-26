@@ -28,6 +28,9 @@ class ChangesCollector {
     private val changedMembers = hashMapOf<FqName, MutableSet<String>>()
     private val areSubclassesAffected = hashMapOf<FqName, Boolean>()
 
+    var hasAnyConstantChanged = false
+        private set
+
     fun changes(): List<ChangeInfo> {
         val changes = arrayListOf<ChangeInfo>()
 
@@ -173,17 +176,28 @@ class ChangesCollector {
         ) + proto.enumEntryList.map { nameResolver.getString(it.name) }
     }
 
-    fun collectMemberIfValueWasChanged(scope: FqName, name: String, oldValue: Any?, newValue: Any?) {
+    private fun implCollectMemberIfValueWasChanged(scope: FqName, name: String, oldValue: Any?, newValue: Any?): Boolean {
         if (oldValue == null && newValue == null) {
             throw IllegalStateException("Old and new value are null for $scope#$name")
         }
 
         if (oldValue != null && newValue == null) {
             collectRemovedMember(scope, name)
+            return true
         }
         else if (oldValue != newValue) {
             collectChangedMember(scope, name)
+            return true
         }
+        return false
+    }
+
+    fun collectMemberIfValueWasChanged(scope: FqName, name: String, oldValue: Any?, newValue: Any?) {
+        implCollectMemberIfValueWasChanged(scope, name, oldValue, newValue);
+    }
+
+    fun collectConstantIfValueWasChanged(scope: FqName, name: String, oldValue: Any?, newValue: Any?) {
+        if (implCollectMemberIfValueWasChanged(scope, name, oldValue, newValue)) hasAnyConstantChanged = true
     }
 
     private fun collectSignature(classData: ClassProtoData, areSubclassesAffected: Boolean) {

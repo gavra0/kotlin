@@ -10,6 +10,7 @@ import org.jetbrains.kotlin.base.kapt3.*
 import org.jetbrains.kotlin.kapt3.base.util.KaptLogger
 import org.jetbrains.kotlin.kapt3.base.util.WriterBackedKaptLogger
 import org.jetbrains.kotlin.kapt3.base.util.info
+import java.io.File
 import kotlin.system.measureTimeMillis
 
 object Kapt {

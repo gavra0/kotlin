@@ -76,8 +76,10 @@ open class KaptContext(val options: KaptOptions, val withJdk: Boolean, val logge
                 put("accessInternalAPI", "true")
             }
 
-            putJavacOption("CLASSPATH", "CLASS_PATH",
-                           options.compileClasspath.joinToString(File.pathSeparator) { it.canonicalPath })
+            val classpath = (options.compileClasspath + options.kotlinCompiledClasses)
+                .joinToString(File.pathSeparator) { it.canonicalPath }
+
+            putJavacOption("CLASSPATH", "CLASS_PATH", classpath)
 
             @Suppress("SpellCheckingInspection")
             putJavacOption("PROCESSORPATH", "PROCESSOR_PATH",

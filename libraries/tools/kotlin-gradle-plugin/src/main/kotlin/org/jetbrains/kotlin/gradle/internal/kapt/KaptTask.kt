@@ -55,6 +55,15 @@ abstract class KaptTask : ConventionTask(), TaskWithLocalState {
     @get:OutputDirectory
     lateinit var kotlinSourcesDestinationDir: File
 
+    /** Output directory that contains caches necessary to support incremental annotation processing. */
+    @get:OutputDirectory
+    lateinit var incApCache: File
+
+    /** File collection containing files that contain which files should be reprocessed using annotation processors. */
+    @get:Optional
+    @get:InputFile
+    var sourcesToReprocess: File? = null
+
     @get:Nested
     internal val annotationProcessorOptionProviders: MutableList<Any> = mutableListOf()
 
@@ -63,8 +72,7 @@ abstract class KaptTask : ConventionTask(), TaskWithLocalState {
 
     // @Internal because _abiClasspath and _nonAbiClasspath are used for actual checks
     @get:Internal
-    val classpath: FileCollection
-        get() = kotlinCompileTask.classpath
+    lateinit var classpath: FileCollection
 
     @Suppress("unused", "DeprecatedCallableAddReplaceWith")
     @Deprecated(

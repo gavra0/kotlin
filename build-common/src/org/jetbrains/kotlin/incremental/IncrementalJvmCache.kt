@@ -28,6 +28,8 @@ import org.jetbrains.kotlin.inline.inlineFunctionsJvmNames
 import org.jetbrains.kotlin.load.kotlin.header.KotlinClassHeader
 import org.jetbrains.kotlin.load.kotlin.incremental.components.IncrementalCache
 import org.jetbrains.kotlin.load.kotlin.incremental.components.JvmPackagePartProto
+import org.jetbrains.kotlin.load.kotlin.internalName
+import org.jetbrains.kotlin.metadata.ProtoBuf
 import org.jetbrains.kotlin.metadata.jvm.deserialization.BitEncoding
 import org.jetbrains.kotlin.metadata.jvm.deserialization.JvmProtoBufUtil
 import org.jetbrains.kotlin.metadata.jvm.deserialization.ModuleMapping
@@ -54,14 +56,19 @@ open class IncrementalJvmCache(
         private val INLINE_FUNCTIONS = "inline-functions"
         private val INTERNAL_NAME_TO_SOURCE = "internal-name-to-source"
         private val JAVA_SOURCES_PROTO_MAP = "java-sources-proto-map"
+        private val JAVA_CLASSES_DEPENDENCIES = "java-classes-dependencies"
 
         private val MODULE_MAPPING_FILE_NAME = "." + ModuleMapping.MAPPING_FILE_EXT
+
+        private val SOURCE_TO_GENERATED_STUBS = "source-to-generated-stubs"
     }
 
     override val sourceToClassesMap = registerMap(SourceToJvmNameMap(SOURCE_TO_CLASSES.storageFile))
     override val dirtyOutputClassesMap = registerMap(DirtyClassesJvmNameMap(DIRTY_OUTPUT_CLASSES.storageFile))
 
-    private val protoMap = registerMap(ProtoMap(PROTO_MAP.storageFile))
+    val sourceToGeneratedStubs = registerMap(FilesMap(SOURCE_TO_GENERATED_STUBS.storageFile))
+
+    val protoMap = registerMap(ProtoMap(PROTO_MAP.storageFile))
     private val constantsMap = registerMap(ConstantsMap(CONSTANTS_MAP.storageFile))
     private val packagePartMap = registerMap(PackagePartMap(PACKAGE_PARTS.storageFile))
     private val multifileFacadeToParts = registerMap(MultifileClassFacadeMap(MULTIFILE_CLASS_FACADES.storageFile))
@@ -69,7 +76,8 @@ open class IncrementalJvmCache(
     private val inlineFunctionsMap = registerMap(InlineFunctionsMap(INLINE_FUNCTIONS.storageFile))
     // todo: try to use internal names only?
     private val internalNameToSource = registerMap(InternalNameToSourcesMap(INTERNAL_NAME_TO_SOURCE.storageFile))
-    private val javaSourcesProtoMap = registerMap(JavaSourcesProtoMap(JAVA_SOURCES_PROTO_MAP.storageFile))
+    val javaSourcesProtoMap = registerMap(JavaSourcesProtoMap(JAVA_SOURCES_PROTO_MAP.storageFile))
+    private val javaClassesDependencies = registerMap(ClassOneToManyMap(JAVA_CLASSES_DEPENDENCIES.storageFile))
 
     private val outputDir by lazy(LazyThreadSafetyMode.NONE) { requireNotNull(targetOutputDir) { "Target is expected to have output directory" } }
 
@@ -100,6 +108,13 @@ open class IncrementalJvmCache(
         protoMap.storeModuleMapping(jvmClassName, file.readBytes())
         dirtyOutputClassesMap.notDirty(jvmClassName)
         sourceFiles.forEach { sourceToClassesMap.add(it, jvmClassName) }
+    }
+
+    fun saveGeneratedJavaToCache(sourceFiles: Collection<File>, file: File) {
+        sourceFiles.forEach {
+            // each stub will be there only once
+            sourceToGeneratedStubs[it] = listOf(file)
+        }
     }
 
     open fun saveFileToCache(generatedClass: GeneratedJvmClass, changesCollector: ChangesCollector) {
@@ -169,8 +184,15 @@ open class IncrementalJvmCache(
         val jvmClassName = JvmClassName.byClassId(serializedJavaClass.classId)
         javaSourcesProtoMap.process(jvmClassName, serializedJavaClass, collector)
         sourceToClassesMap.add(source, jvmClassName)
+        constantsMap.process(serializedJavaClass, collector)
+
         val (proto, nameResolver) = serializedJavaClass.toProtoData()
         addToClassStorage(proto, nameResolver, source)
+
+        val allMentionedTypes = serializedJavaClass.getAllMentionedTypes()
+        allMentionedTypes.forEach {
+            javaClassesDependencies.add(it, jvmClassName.fqNameForClassNameWithoutDollars)
+        }
 
         dirtyOutputClassesMap.notDirty(jvmClassName)
     }
@@ -190,6 +212,12 @@ open class IncrementalJvmCache(
     fun isJavaClassAlreadyInCache(classId: ClassId): Boolean {
         val jvmClassName = JvmClassName.byClassId(classId)
         return jvmClassName in javaSourcesProtoMap
+    }
+
+    override fun markDirty(removedAndCompiledSources: Collection<File>) {
+        super.markDirty(removedAndCompiledSources)
+
+        removedAndCompiledSources.forEach { sourceToGeneratedStubs.remove(it) }
     }
 
     override fun clearCacheForRemovedClasses(changesCollector: ChangesCollector) {
@@ -261,7 +289,7 @@ open class IncrementalJvmCache(
         return protoMap[JvmClassName.byInternalName(MODULE_MAPPING_FILE_NAME)]?.bytes
     }
 
-    private inner class ProtoMap(storageFile: File) : BasicStringMap<ProtoMapValue>(storageFile, ProtoMapValueExternalizer) {
+    inner class ProtoMap(storageFile: File) : BasicStringMap<ProtoMapValue>(storageFile, ProtoMapValueExternalizer) {
 
         fun process(kotlinClass: LocalFileKotlinClass, changesCollector: ChangesCollector) {
             return put(kotlinClass, changesCollector)
@@ -314,7 +342,7 @@ open class IncrementalJvmCache(
         }
     }
 
-    private inner class JavaSourcesProtoMap(storageFile: File) :
+    inner class JavaSourcesProtoMap(storageFile: File) :
         BasicStringMap<SerializedJavaClass>(storageFile, JavaClassProtoMapValueExternalizer) {
         fun process(jvmClassName: JvmClassName, newData: SerializedJavaClass, changesCollector: ChangesCollector) {
             val key = jvmClassName.internalName
@@ -330,10 +358,17 @@ open class IncrementalJvmCache(
         fun remove(className: JvmClassName, changesCollector: ChangesCollector) {
             val key = className.internalName
             val oldValue = storage[key] ?: return
+
+            for (mentionedType in oldValue.getAllMentionedTypes()) {
+                javaClassesDependencies.removeValues(mentionedType, setOf(className.fqNameForClassNameWithoutDollars))
+            }
+
             storage.remove(key)
 
             changesCollector.collectProtoChanges(oldValue.toProtoData(), newData = null)
         }
+
+        fun getDependants(fqName: FqName): Collection<FqName> = javaClassesDependencies.get(fqName)
 
         operator fun get(className: JvmClassName): SerializedJavaClass? =
             storage[className.internalName]
@@ -343,6 +378,8 @@ open class IncrementalJvmCache(
 
         override fun dumpValue(value: SerializedJavaClass): String =
             java.lang.Long.toHexString(value.proto.toByteArray().md5())
+
+        fun keys() = storage.keys
     }
 
     // todo: reuse code with InlineFunctionsMap?
@@ -367,18 +404,35 @@ open class IncrementalJvmCache(
             className.internalName in storage
 
         fun process(kotlinClass: LocalFileKotlinClass, changesCollector: ChangesCollector) {
-            val key = kotlinClass.className.internalName
+            implProcess(
+                kotlinClass.className.internalName,
+                getConstantsMap(kotlinClass.fileContents),
+                kotlinClass.scopeFqName(),
+                changesCollector
+            )
+        }
+
+        fun process(javaFile: SerializedJavaClass, changesCollector: ChangesCollector) {
+            val fqName = JvmClassName.byClassId(javaFile.classId).fqNameForClassNameWithoutDollars
+            implProcess(
+                fqName.asString(),
+                javaFile.getAllConstants(),
+                fqName,
+                changesCollector
+            )
+        }
+
+        private fun implProcess(key: String, constants: Map<String, Any>, scope: FqName, changesCollector: ChangesCollector) {
             val oldMap = storage[key] ?: emptyMap()
 
-            val newMap = getConstantsMap(kotlinClass.fileContents)
-            if (newMap.isNotEmpty()) {
-                storage[key] = newMap
+            if (constants.isNotEmpty()) {
+                storage[key] = constants
             } else {
                 storage.remove(key)
             }
 
-            for (const in oldMap.keys + newMap.keys) {
-                changesCollector.collectMemberIfValueWasChanged(kotlinClass.scopeFqName(), const, oldMap[const], newMap[const])
+            for (const in oldMap.keys + constants.keys) {
+                changesCollector.collectConstantIfValueWasChanged(scope, const, oldMap[const], constants[const])
             }
         }
 

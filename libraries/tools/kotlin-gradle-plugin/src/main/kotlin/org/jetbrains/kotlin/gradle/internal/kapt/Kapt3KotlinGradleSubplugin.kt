@@ -157,6 +157,10 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
 
     private fun Kapt3SubpluginContext.getKaptIncrementalDataDir() = createAndReturnTemporaryKaptDirectory("incrementalData")
 
+    private fun Kapt3SubpluginContext.getKaptIncrementalAnnotationProcessingCache() = createAndReturnTemporaryKaptDirectory("incApCache/mappings")
+
+    private fun Kapt3SubpluginContext.getKaptToReprocess() = createAndReturnTemporaryKaptDirectory("incApCache/reprocess").resolve("incremental.txt")
+
     private fun Kapt3SubpluginContext.createAndReturnTemporaryKaptDirectory(name: String): File {
         val dir = File(project.buildDir, "tmp/kapt3/$name/$sourceSetName")
         dir.mkdirs()
@@ -245,7 +249,7 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
     }
 
     // This method should be called no more than once for each Kapt3SubpluginContext
-    private fun Kapt3SubpluginContext.buildOptions(aptMode: String): List<SubpluginOption> {
+    private fun Kapt3SubpluginContext.buildOptions(aptMode: String, additionalOptions: List<SubpluginOption> = emptyList()): List<SubpluginOption> {
         val pluginOptions = mutableListOf<SubpluginOption>()
 
         val generatedFilesDir = getKaptGeneratedSourcesDir(project, sourceSetName)
@@ -275,6 +279,8 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
         pluginOptions += SubpluginOption("javacArguments", encodeList(kaptExtension.getJavacOptions()))
 
         pluginOptions += SubpluginOption("includeCompileClasspath", includeCompileClasspath.toString())
+
+        pluginOptions.addAll(additionalOptions)
 
         addMiscOptions(pluginOptions)
 
@@ -313,9 +319,9 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
                 subluginOptionsFromProvidedApOptions
     }
 
-    private fun Kapt3SubpluginContext.buildAndAddOptionsTo(task: Task, container: CompilerPluginOptions, aptMode: String) {
+    private fun Kapt3SubpluginContext.buildAndAddOptionsTo(task: Task, container: CompilerPluginOptions, aptMode: String, additionalOptions: List<SubpluginOption> = emptyList()) {
         val compilerPluginId = getCompilerPluginId()
-        val kaptSubpluginOptions = buildOptions(aptMode)
+        val kaptSubpluginOptions = buildOptions(aptMode, additionalOptions)
         task.registerSubpluginOptionsAsInputs(compilerPluginId, kaptSubpluginOptions)
 
         for (option in kaptSubpluginOptions) {
@@ -377,6 +383,23 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
         kaptTask.classesDir = classesOutputDir
         kaptTask.includeCompileClasspath = includeCompileClasspath
 
+        kaptTask.incApCache = getKaptIncrementalAnnotationProcessingCache()
+
+        val classpath = project.files(kotlinCompile.classpath)
+        /** We need Kotlin and Java compiled classes to exist, so annotation processing can use them to resolve types. */
+        val kaptCanBeIncremental =
+            kotlinCompile.destinationDir.isDirectory
+                    && (javaCompile?.destinationDir?.isDirectory ?: true)
+                    && getKaptToReprocess().isFile
+        if (kaptCanBeIncremental) {
+            kaptTask.sourcesToReprocess = getKaptToReprocess()
+            classpath.from(kotlinCompile.destinationDir)
+            javaCompile?.destinationDir?.let {
+                classpath.from(it)
+            }
+        }
+        kaptTask.classpath = classpath
+
         kotlinCompilation?.run {
             output.apply {
                 addClassesDir { project.files(classesOutputDir).builtBy(kaptTask) }
@@ -401,7 +424,14 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
         }
 
         if (kaptTask is KaptWithKotlincTask) {
-            buildAndAddOptionsTo(kaptTask, kaptTask.pluginOptions, aptMode = "apt")
+            val incrementalAptOptions = mutableListOf(
+                SubpluginOption("incrementalAnnotationProcessingCache", kaptTask.incApCache!!.absolutePath)
+            )
+            kaptTask.sourcesToReprocess?.let {
+                incrementalAptOptions.add(SubpluginOption("sourcesToReprocess", it.absolutePath))
+                incrementalAptOptions.add(FilesSubpluginOption("kotlinCompiledClasses", listOf(kotlinCompile.destinationDir)))
+            }
+            buildAndAddOptionsTo(kaptTask, kaptTask.pluginOptions, aptMode = "apt", additionalOptions = incrementalAptOptions)
         }
 
         if (kaptTask is KaptWithoutKotlincTask) {
@@ -435,6 +465,8 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
 
         kaptTask.kaptClasspathConfigurations = kaptClasspathConfigurations
         buildAndAddOptionsTo(kaptTask, kaptTask.pluginOptions, aptMode = "stubs")
+
+        kaptTask.sourcesToReprocess = getKaptToReprocess()
 
         return kaptTask
     }

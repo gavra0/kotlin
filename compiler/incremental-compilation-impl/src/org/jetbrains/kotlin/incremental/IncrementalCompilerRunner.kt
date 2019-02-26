@@ -75,7 +75,8 @@ abstract class IncrementalCompilerRunner<
             if (providedChangedFiles == null) {
                 caches.inputsCache.sourceSnapshotMap.compareAndUpdate(allSourceFiles)
             }
-            val allKotlinFiles = allSourceFiles.filter { it.isKotlinFile(kotlinSourceFilesExtensions) }
+            val (allKotlinFiles, allJavaFiles) = allSourceFiles.partition { it.isKotlinFile(kotlinSourceFilesExtensions) }
+
             return compileIncrementally(args, caches, allKotlinFiles, CompilationMode.Rebuild(), messageCollector)
         }
 
@@ -267,15 +268,22 @@ abstract class IncrementalCompilerRunner<
             val (dirtyLookupSymbols, dirtyClassFqNames) = changesCollector.getDirtyData(listOf(caches.platformCache), reporter)
             val compiledInThisIterationSet = sourcesToCompile.toHashSet()
 
+            updateAdditionalSourcesState(dirtyClassFqNames, changesCollector.hasAnyConstantChanged, services, args)
+
             with (dirtySources) {
                 clear()
                 addAll(mapLookupSymbolsToFiles(caches.lookupCache, dirtyLookupSymbols, reporter, excludes = compiledInThisIterationSet))
                 addAll(mapClassesFqNamesToFiles(listOf(caches.platformCache), dirtyClassFqNames, reporter, excludes = compiledInThisIterationSet))
+
+
             }
 
             buildDirtyLookupSymbols.addAll(dirtyLookupSymbols)
             buildDirtyFqNames.addAll(dirtyClassFqNames)
         }
+
+        // TODO(gavra): get dirty symbols and fqNames from classpath changes. These are stored under compilationMode.dirtyFiles.
+        additionalProcessing(compilationMode, buildDirtyFqNames, args)
 
         if (exitCode == ExitCode.OK) {
             BuildInfo.write(currentBuildInfo, lastBuildInfoFile)
@@ -289,6 +297,24 @@ abstract class IncrementalCompilerRunner<
 
         return exitCode
     }
+
+    protected open fun additionalProcessing(
+        compilationMode: CompilationMode,
+        buildDirtyFqNames: HashSet<FqName>,
+        args: Args
+    ) {
+        // do nothing
+    }
+
+    protected open fun updateAdditionalSourcesState(
+        dirtyClassFqNames: Collection<FqName>,
+        hasAnyConstantChanged: Boolean,
+        services: Services,
+        args: Args
+    ) {
+        // do nothing by default
+    }
+
 
     protected fun getRemovedClassesChanges(
         caches: IncrementalCachesManager<*>,

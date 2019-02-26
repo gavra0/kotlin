@@ -88,19 +88,23 @@ fun updateIncrementalCache(
     generatedFiles: Iterable<GeneratedFile>,
     cache: IncrementalJvmCache,
     changesCollector: ChangesCollector,
-    javaChangesTracker: JavaClassesTrackerImpl?
+    javaChangesTracker: JavaClassesTrackerImpl?,
+    reporter: ICReporter
 ) {
     for (generatedFile in generatedFiles) {
         when {
             generatedFile is GeneratedJvmClass -> cache.saveFileToCache(generatedFile, changesCollector)
             generatedFile.outputFile.isModuleMappingFile() -> cache.saveModuleMappingToCache(generatedFile.sourceFiles, generatedFile.outputFile)
+            generatedFile.outputFile.isJavaFile() -> cache.saveGeneratedJavaToCache(generatedFile.sourceFiles, generatedFile.outputFile)
         }
     }
 
+    val l = System.currentTimeMillis()
     javaChangesTracker?.javaClassesUpdates?.forEach {
         (source, serializedJavaClass) ->
         cache.saveJavaClassProto(source, serializedJavaClass, changesCollector)
     }
+    reporter.reportImportant("Updating java caches took: ${System.currentTimeMillis() - l}")
 
     cache.clearCacheForRemovedClasses(changesCollector)
 }

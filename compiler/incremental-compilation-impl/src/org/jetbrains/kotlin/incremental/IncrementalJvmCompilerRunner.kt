@@ -43,10 +43,13 @@ import org.jetbrains.kotlin.incremental.multiproject.ModulesApiHistory
 import org.jetbrains.kotlin.load.java.JavaClassesTracker
 import org.jetbrains.kotlin.load.kotlin.header.KotlinClassHeader
 import org.jetbrains.kotlin.load.kotlin.incremental.components.IncrementalCompilationComponents
+import org.jetbrains.kotlin.metadata.jvm.deserialization.ModuleMapping
 import org.jetbrains.kotlin.modules.TargetId
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.resolve.jvm.JvmClassName
+import java.io.Closeable
 import java.io.File
 
 fun makeIncrementally(
@@ -115,8 +118,10 @@ class IncrementalJvmCompilerRunner(
     override fun isICEnabled(): Boolean =
             IncrementalCompilation.isEnabledForJvm()
 
-    override fun createCacheManager(args: K2JVMCompilerArguments): IncrementalJvmCachesManager =
-            IncrementalJvmCachesManager(cacheDirectory, File(args.destination), reporter)
+    override fun createCacheManager(args: K2JVMCompilerArguments): IncrementalJvmCachesManager {
+        cacheManager = IncrementalJvmCachesManager(cacheDirectory, File(args.destination), reporter)
+        return cacheManager
+    }
 
     override fun destinationDir(args: K2JVMCompilerArguments): File =
             args.destinationAsFile
@@ -130,6 +135,8 @@ class IncrementalJvmCompilerRunner(
     }
 
     private val changedUntrackedJavaClasses = mutableSetOf<ClassId>()
+
+    private lateinit var cacheManager: IncrementalJvmCachesManager
 
     private var javaFilesProcessor =
             if (!usePreciseJavaTracking)
@@ -170,7 +177,8 @@ class IncrementalJvmCompilerRunner(
             }
             dirtyFiles.addByDirtySymbols(affectedJavaSymbols)
         } else {
-            if (!processChangedJava(changedFiles, caches)) {
+            val changedClasspathFqNames = classpathChanges.fqNames.takeIf { args.shouldKeepTrackOfJavaChanges() } ?: emptySet()
+            if (!processChangedJava(changedFiles, caches, changedClasspathFqNames)) {
                 return CompilationMode.Rebuild { "Could not get changes for java files" }
             }
         }
@@ -185,44 +193,256 @@ class IncrementalJvmCompilerRunner(
         return CompilationMode.Incremental(dirtyFiles)
     }
 
-    private fun processChangedJava(changedFiles: ChangedFiles.Known, caches: IncrementalJvmCachesManager): Boolean {
+    /** If we should keep track of all Java source file changes. Changes can be caused by changes in Kotlin/classpath. */
+    private fun K2JVMCompilerArguments.shouldKeepTrackOfJavaChanges(): Boolean =
+        this.sourcesToReprocessWithAP != null && usePreciseJavaTracking
+
+    private fun processChangedJava(
+        changedFiles: ChangedFiles.Known,
+        caches: IncrementalJvmCachesManager,
+        dirtyClasspathFqNames: Collection<FqName> = emptyList()
+    ): Boolean {
         val javaFiles = (changedFiles.modified + changedFiles.removed).filter(File::isJavaFile)
 
         for (javaFile in javaFiles) {
-            if (!caches.platformCache.isTrackedFile(javaFile)) {
-                if (!javaFile.exists()) {
-                    // todo: can we do this more optimal?
-                    reporter.report { "Could not get changed for untracked removed java file $javaFile" }
-                    return false
-                }
-
-                val psiFile = javaFile.psiFile()
-                if (psiFile !is PsiJavaFile) {
-                    reporter.report { "[Precise Java tracking] Expected PsiJavaFile, got ${psiFile?.javaClass}" }
-                    return false
-                }
-
-                for (psiClass in psiFile.classes) {
-                    val qualifiedName = psiClass.qualifiedName
-                    if (qualifiedName == null) {
-                        reporter.report { "[Precise Java tracking] Class with unknown qualified name in $javaFile" }
-                        return false
-                    }
-
-                    processChangedUntrackedJavaClass(psiClass, ClassId.topLevel(FqName(qualifiedName)))
-                }
+            if (javaFile.exists()) {
+                if (!processChangedJavaFile(javaFile)) return false
+            } else if (!caches.platformCache.isTrackedFile(javaFile)){
+                // todo: can we do this more optimal?
+                reporter.report { "Could not get changed for untracked removed java file $javaFile" }
+                return false
             }
         }
 
         caches.platformCache.markDirty(javaFiles)
+
+        // also mark dirty all java files that are impacted by classpath changes
+        for (classpathFqName in dirtyClasspathFqNames) {
+            val dependants = caches.platformCache.javaSourcesProtoMap.getDependants(classpathFqName)
+
+            caches.platformCache.markDirty(
+                dependants.mapNotNull { caches.platformCache.getSourceFileIfClass(it) }
+            )
+        }
+
         return true
+    }
+
+    // Returns if we are able to process the specified Java file
+    private fun processChangedJavaFile(javaFile: File): Boolean {
+        val psiFile = javaFile.psiFile()
+        if (psiFile !is PsiJavaFile) {
+            reporter.report { "[Precise Java tracking] Expected PsiJavaFile, got ${psiFile?.javaClass}" }
+            return false
+        }
+
+        for (psiClass in psiFile.classes) {
+            val qualifiedName = psiClass.qualifiedName
+            if (qualifiedName == null) {
+                reporter.report { "[Precise Java tracking] Class with unknown qualified name in $javaFile" }
+                return false
+            }
+
+            processChangedUntrackedJavaClass(psiClass, ClassId.topLevel(FqName(qualifiedName)))
+        }
+
+        return true
+    }
+
+    private class IncrementalApt(private val file: File, private val reporter: ICReporter): Closeable {
+        private var isIncremental: Boolean = true
+        private val setOfFiles = mutableSetOf<File>()
+        private var rebuildReason: String? = null
+
+        fun addSource(src: File) {
+            if (isIncremental) {
+                setOfFiles.add(src)
+            }
+        }
+
+        fun fullRebuild(reason: String) {
+            if (isIncremental) {
+                isIncremental = false
+                rebuildReason = reason
+            }
+        }
+
+        override fun close() {
+            file.delete()
+
+            if (isIncremental) {
+                file.bufferedWriter().use { writer ->
+                    setOfFiles.sorted().forEach { writer.appendln(it.absolutePath) }
+                }
+            }
+
+            rebuildReason?.also {
+                reporter.report { "Annotation processing will run on all files. Reason: $rebuildReason" }
+            }
+        }
+    }
+
+    override fun additionalProcessing(
+        compilationMode: CompilationMode,
+        buildDirtyFqNames: HashSet<FqName>,
+        args: K2JVMCompilerArguments) {
+        args.sourcesToReprocessWithAP?.let { outputFile ->
+            IncrementalApt(File(outputFile), reporter).use {
+                if (!usePreciseJavaTracking) {
+                    it.fullRebuild("Precise java tracking has to be enabled.")
+                } else if (compilationMode !is CompilationMode.Incremental) {
+                    it.fullRebuild("Not an incremental run.")
+                } else {
+                    computeSourcesForIncrementalApt(buildDirtyFqNames, it)
+                }
+            }
+        }
+    }
+
+    /**
+     * For set of dirty fully-qualified names, this finds all java classes that might be impacted, and that should be analyzed again in
+     * order to get updated proto information about them.
+     */
+    override fun updateAdditionalSourcesState(
+        dirtyClassFqNames: Collection<FqName>,
+        hasAnyConstantChanged: Boolean,
+        services: Services,
+        args: K2JVMCompilerArguments) {
+        if (!args.shouldKeepTrackOfJavaChanges()) return
+
+        val javaClassesTracker = services.get(JavaClassesTracker::class.java) as? JavaClassesTrackerImpl ?: return
+
+        val javaSourcesInThisRound = javaClassesTracker.javaClassesUpdates.map { it.source }.toSet()
+        val javaSourcesToReprocess = mutableSetOf<File>()
+
+        if (hasAnyConstantChanged) {
+            // get all java sources not processed in this round
+            for (key in cacheManager.platformCache.javaSourcesProtoMap.keys()) {
+                cacheManager.platformCache.sourcesByInternalName(key)
+                    .filter { !javaSourcesInThisRound.contains(it) }
+                    .let {
+                        javaSourcesToReprocess.addAll(it)
+                    }
+            }
+        } else {
+            // TODO (gavra): handle case when adding a class changes the resolved type. E.g. for some class, type T can resolved to just
+            // added top-level class in the same package, because classes from the same package are implicitly in the same scope. See
+            // https://docs.oracle.com/javase/specs/jls/se8/html/jls-6.html#jls-6.3 for details.
+
+            fun maybeMarkDirtyFq(dirtyFqName: FqName) {
+                cacheManager.platformCache.getSourceFileIfClass(dirtyFqName)?.let { sourceFile ->
+                    if (sourceFile.extension == "java" && !javaSourcesInThisRound.contains(sourceFile)) {
+                        javaSourcesToReprocess.add(sourceFile)
+                    }
+                }
+            }
+
+            for (dirtyFq in dirtyClassFqNames) {
+                maybeMarkDirtyFq(dirtyFq)
+
+                cacheManager.platformCache.javaSourcesProtoMap.getDependants(dirtyFq).forEach { maybeMarkDirtyFq(it) }
+            }
+        }
+
+        cacheManager.platformCache.markDirty(javaSourcesToReprocess)
+    }
+
+    /** Converts a fully qualified name (e.g. com.example.test.Outter.Inner) to JvmClassName (e.g. com/example/tests/Outter$Inner). */
+    private fun fqNametoJvm(fq: FqName): JvmClassName? {
+        // TODO (gavra): write this in a more performant way
+        val sourceFile = cacheManager.platformCache.getSourceFileIfClass(fq) ?: return null
+
+        return cacheManager.platformCache.classesBySources(listOf(sourceFile)).firstOrNull {
+            it.fqNameForClassNameWithoutDollars.asString() == fq.asString()
+        }
+    }
+
+    private fun collectChanges(jvmName: JvmClassName, change: ChangesCollector): Boolean {
+        return cacheManager.platformCache.javaSourcesProtoMap[jvmName]?.let {
+            change.collectProtoChanges(null, it.toProtoData(), true)
+            true
+        } ?: cacheManager.platformCache.protoMap[jvmName]?.let {
+            change.collectProtoChanges(null, it.toProtoData(jvmName.packageFqName), true)
+            true
+        } ?: false
+    }
+
+    private fun computeSourcesForIncrementalApt(buildDirtyFqNames: HashSet<FqName>, incrementalApt: IncrementalApt) {
+        if (buildDirtyFqNames.isEmpty()) return // we are done, no files to reprocess with apts
+
+        val platformCache = cacheManager.platformCache
+
+        val changes = ChangesCollector()
+        for (buildDirtyFqName in buildDirtyFqNames) {
+            val jvmClassName = fqNametoJvm(buildDirtyFqName)
+            if (jvmClassName == null) {
+                incrementalApt.fullRebuild("Unable to find internal name for $buildDirtyFqName")
+                return
+            }
+
+            if (!collectChanges(jvmClassName, changes)) {
+                incrementalApt.fullRebuild("Unable to get class data for $jvmClassName")
+                return
+            }
+        }
+        // At this point changes contains all API AST elements of changed files (both Kotlin and Java).
+        var (dirtySymbols, dirtyFqNames) = changes.getDirtyData(listOf(platformCache), reporter)
+        val visitedSymbols = dirtySymbols.toMutableSet()
+        val visitedFqNames = dirtyFqNames.toMutableSet()
+
+        while (dirtySymbols.isNotEmpty() || dirtyFqNames.isNotEmpty()) {
+            val currentDirtySources = mutableSetOf<File>()
+            // TODO (gavra): If a kotlin source defines multiple types (produces multiple stubs), we can process only some of them. Now we process all.
+            currentDirtySources.addAll(mapLookupSymbolsToFiles(cacheManager.lookupCache, dirtySymbols, reporter))
+            currentDirtySources.addAll(mapClassesFqNamesToFiles(listOf(platformCache), dirtyFqNames, reporter))
+            for (source in currentDirtySources) {
+                platformCache.sourceToGeneratedStubs[source].forEach { incrementalApt.addSource(it) }
+            }
+
+            val javaSources = mutableSetOf<FqName>()
+            for (dirtyFqName in dirtyFqNames) {
+                val dependants = platformCache.javaSourcesProtoMap.getDependants(dirtyFqName)
+                javaSources.addAll(dependants)
+            }
+
+            javaSources.forEach {
+                val srcFile = platformCache.getSourceFileIfClass(it)
+                if (srcFile == null) {
+                    incrementalApt.fullRebuild("Unable to load Java sources file $it")
+                    return
+                }
+                currentDirtySources.add(srcFile)
+                incrementalApt.addSource(srcFile)
+            }
+
+            // compute for the next round dirty symbols and
+            val jvmClassNames =
+                platformCache.classesBySources(currentDirtySources)
+                    .filter { it.internalName != ".${ModuleMapping.MAPPING_FILE_EXT}" }
+
+            val nextChanges = ChangesCollector()
+            jvmClassNames.forEach { jvmName ->
+                if (!collectChanges(jvmName, nextChanges)) {
+                    incrementalApt.fullRebuild("Unable to get class data for $jvmName")
+                    return
+                }
+            }
+
+            val (newSymbols, newFqNames) = nextChanges.getDirtyData(listOf(platformCache), reporter)
+
+            dirtySymbols = newSymbols.filter { visitedSymbols.add(it) }
+            dirtyFqNames = newFqNames.filter { visitedFqNames.add(it) }
+        }
     }
 
     private fun File.psiFile(): PsiFile? =
             psiFileFactory.createFileFromText(nameWithoutExtension, JavaLanguage.INSTANCE, readText())
 
     private fun processChangedUntrackedJavaClass(psiClass: PsiClass, classId: ClassId) {
-        changedUntrackedJavaClasses.add(classId)
+        if (!cacheManager.platformCache.isJavaClassAlreadyInCache(classId)) {
+            changedUntrackedJavaClasses.add(classId)
+        }
+
         for (innerClass in psiClass.innerClasses) {
             val name = innerClass.name ?: continue
             processChangedUntrackedJavaClass(innerClass, classId.createNestedClassId(Name.identifier(name)))
@@ -245,6 +465,15 @@ class IncrementalJvmCompilerRunner(
             val destinationDir = args.destinationAsFile
             destinationDir.mkdirs()
             args.classpathAsList = listOf(destinationDir) + args.classpathAsList
+        } else if (args.shouldKeepTrackOfJavaChanges()) {
+            val l = System.currentTimeMillis()
+            javaSourceRoots.map { sourceRoot ->
+                sourceRoot.file.walk().filter { it.extension == "java" }.forEach { javaFile ->
+                    processChangedJavaFile(javaFile)
+                }
+            }
+
+            reporter.reportImportant("Pre build hook took to execute: ${System.currentTimeMillis() - l}")
         }
     }
 
@@ -258,7 +487,8 @@ class IncrementalJvmCompilerRunner(
     ) {
         updateIncrementalCache(
                 generatedFiles, caches.platformCache, changesCollector,
-                services[JavaClassesTracker::class.java] as? JavaClassesTrackerImpl
+                services[JavaClassesTracker::class.java] as? JavaClassesTrackerImpl,
+                reporter
         )
     }
 
@@ -321,7 +551,7 @@ class IncrementalJvmCompilerRunner(
             val incrementalComponents = IncrementalCompilationComponentsImpl(targetToCache)
             register(IncrementalCompilationComponents::class.java, incrementalComponents)
             if (usePreciseJavaTracking) {
-                val changesTracker = JavaClassesTrackerImpl(caches.platformCache, changedUntrackedJavaClasses.toSet())
+                val changesTracker = JavaClassesTrackerImpl(caches.platformCache, changedUntrackedJavaClasses.toSet(), reporter)
                 changedUntrackedJavaClasses.clear()
                 register(JavaClassesTracker::class.java, changesTracker)
             }

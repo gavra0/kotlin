@@ -3,6 +3,7 @@
 
 package org.jetbrains.kotlin.metadata;
 
+
 public final class ProtoBuf {
   private ProtoBuf() {}
   public static void registerAllExtensions(
@@ -9143,7 +9144,8 @@ public final class ProtoBuf {
     /**
      * <code>repeated .org.jetbrains.kotlin.metadata.Property property = 10;</code>
      */
-    public java.util.List<org.jetbrains.kotlin.metadata.ProtoBuf.Property> getPropertyList() {
+    public java.util.List<org.jetbrains.kotlin.metadata.ProtoBuf.Property>
+    getPropertyList() {
       return property_;
     }
     /**

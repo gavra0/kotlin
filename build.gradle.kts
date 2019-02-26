@@ -8,7 +8,7 @@ import proguard.gradle.ProGuardTask
 import org.gradle.kotlin.dsl.*
 
 buildscript {
-    extra["defaultSnapshotVersion"] = "1.3-SNAPSHOT"
+    extra["defaultSnapshotVersion"] = "1.4-SNAPSHOT"
 
     kotlinBootstrapFrom(BootstrapOption.TeamCity("1.3.30-dev-1419", onlySuccessBootstrap = false))
 

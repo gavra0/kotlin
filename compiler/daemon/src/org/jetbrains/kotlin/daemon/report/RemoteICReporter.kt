@@ -43,5 +43,9 @@ internal class RemoteICReporter(
             )
         }
     }
+
+    override fun reportImportant(s: String) {
+        servicesFacade.report(ReportCategory.COMPILER_MESSAGE, ReportSeverity.ERROR, s)
+    }
 }
 

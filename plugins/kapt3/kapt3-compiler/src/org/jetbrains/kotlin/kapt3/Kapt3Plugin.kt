@@ -96,6 +96,10 @@ class Kapt3CommandLineProcessor : CommandLineProcessor {
             STUBS_OUTPUT_DIR_OPTION -> stubsOutputDir = File(value)
             INCREMENTAL_DATA_OUTPUT_DIR_OPTION -> incrementalDataOutputDir = File(value)
 
+            INCREMENTAL_ANNOTATION_PROCESSING_CACHE -> incrementalAnnotationProcessing = File(value)
+            SOURCES_TO_REPROCESS -> sourcesToReprocess = File(value)
+            KOTLIN_COMPILED_CLASSES -> kotlinCompiledClasses += File(value)
+
             ANNOTATION_PROCESSOR_CLASSPATH_OPTION -> processingClasspath += File(value)
             ANNOTATION_PROCESSORS_OPTION -> processors.addAll(value.split(',').map { it.trim() }.filter { it.isNotEmpty() })
 

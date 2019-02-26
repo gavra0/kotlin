@@ -25,14 +25,19 @@ import org.jetbrains.kotlin.load.java.descriptors.JavaClassDescriptor
 import org.jetbrains.kotlin.load.java.lazy.descriptors.LazyJavaClassDescriptor
 import org.jetbrains.kotlin.metadata.ProtoBuf
 import org.jetbrains.kotlin.metadata.builtins.BuiltInsProtoBuf
+import org.jetbrains.kotlin.metadata.deserialization.Flags
 import org.jetbrains.kotlin.metadata.deserialization.NameResolverImpl
+import org.jetbrains.kotlin.metadata.deserialization.getExtensionOrNull
 import org.jetbrains.kotlin.metadata.java.JavaClassProtoBuf
 import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.protobuf.ExtensionRegistryLite
 import org.jetbrains.kotlin.renderer.DescriptorRenderer
 import org.jetbrains.kotlin.resolve.descriptorUtil.classId
+import org.jetbrains.kotlin.resolve.jvm.JvmClassName
 import org.jetbrains.kotlin.resolve.source.PsiSourceElement
 import org.jetbrains.kotlin.serialization.DescriptorSerializer
+import org.jetbrains.kotlin.serialization.deserialization.builtins.BuiltInSerializerProtocol
 import org.jetbrains.kotlin.serialization.deserialization.getClassId
 import org.jetbrains.kotlin.util.PerformanceCounter
 import org.jetbrains.kotlin.utils.addToStdlib.safeAs
@@ -45,7 +50,8 @@ val CONVERTING_JAVA_CLASSES_TO_PROTO = PerformanceCounter.create("Converting Jav
 
 class JavaClassesTrackerImpl(
         private val cache: IncrementalJvmCache,
-        private val untrackedJavaClasses: Set<ClassId>
+        private val untrackedJavaClasses: Set<ClassId>,
+        private val reporter: ICReporter
 ) : JavaClassesTracker {
     private val classToSourceSerialized: MutableMap<ClassId, SerializedJavaClassWithSource> = hashMapOf()
 
@@ -62,6 +68,7 @@ class JavaClassesTrackerImpl(
     }
 
     override fun onCompletedAnalysis(module: ModuleDescriptor) {
+        val l = System.currentTimeMillis()
         for (classId in cache.getObsoleteJavaClasses() + untrackedJavaClasses) {
             // Just force the loading obsolete classes
             // We assume here that whenever an LazyJavaClassDescriptor instances is created
@@ -80,6 +87,8 @@ class JavaClassesTrackerImpl(
                 }
             }
         }
+
+        reporter.reportImportant("Time took to process java sources: ${System.currentTimeMillis() - l}")
     }
 
     private fun JavaClassDescriptor.wasContentRequested() =
@@ -117,6 +126,55 @@ class SerializedJavaClass(
 ) {
     val classId: ClassId
         get() = NameResolverImpl(stringTable, qualifiedNameTable).getClassId(proto.fqName)
+
+    /**
+     * Get all constants from this class. This returns a map which keys are the field names, and values are the field constant values.
+     * An empty map means there are no constants in the class.
+     */
+    fun getAllConstants(): Map<String, Any> {
+        val constMap = mutableMapOf<String, Any>()
+
+        val nameResolver = NameResolverImpl(stringTable, qualifiedNameTable)
+        for(property in proto.propertyList) {
+            if (!Flags.HAS_CONSTANT.get(property.flags)) continue
+
+            val value = property.getExtensionOrNull(BuiltInSerializerProtocol.compileTimeValue) ?: continue
+            val result: Any? = when (value.type) {
+                ProtoBuf.Annotation.Argument.Value.Type.INT -> value.intValue.toInt()
+                ProtoBuf.Annotation.Argument.Value.Type.SHORT -> value.intValue.toInt()
+                ProtoBuf.Annotation.Argument.Value.Type.BOOLEAN -> value.intValue.toInt()
+                ProtoBuf.Annotation.Argument.Value.Type.CHAR -> value.intValue.toInt()
+                ProtoBuf.Annotation.Argument.Value.Type.LONG -> value.intValue
+                ProtoBuf.Annotation.Argument.Value.Type.FLOAT -> value.floatValue
+                ProtoBuf.Annotation.Argument.Value.Type.DOUBLE -> value.doubleValue
+                ProtoBuf.Annotation.Argument.Value.Type.STRING -> nameResolver.getString(value.stringValue)
+                else -> null
+            }
+
+            result?.let {
+                constMap.put(nameResolver.getString(property.name), it)
+            }
+        }
+        return constMap
+    }
+
+    /** Returns all types mentioned in the serialized java class. */
+    fun getAllMentionedTypes(): Set<FqName> {
+        val mentionedTypes = mutableSetOf<FqName>()
+        val nameResolver = NameResolverImpl(stringTable, qualifiedNameTable)
+
+        for (i in 0 until qualifiedNameTable.qualifiedNameCount) {
+            val qualifiedName: ProtoBuf.QualifiedNameTable.QualifiedName = qualifiedNameTable.getQualifiedName(i)
+            if (qualifiedName.kind != ProtoBuf.QualifiedNameTable.QualifiedName.Kind.PACKAGE) {
+
+                val name = nameResolver.getQualifiedClassName(i)
+                if (name == "kotlin.Any") continue
+
+                mentionedTypes.add(JvmClassName.byInternalName(name).fqNameForClassNameWithoutDollars)
+            }
+        }
+        return mentionedTypes
+    }
 }
 
 data class SerializedJavaClassWithSource(

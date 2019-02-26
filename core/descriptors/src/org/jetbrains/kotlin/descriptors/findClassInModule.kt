@@ -16,7 +16,10 @@
 
 package org.jetbrains.kotlin.descriptors
 
+import org.jetbrains.kotlin.incremental.components.LocationInfo
+import org.jetbrains.kotlin.incremental.components.LookupLocation
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
+import org.jetbrains.kotlin.incremental.components.Position
 import org.jetbrains.kotlin.name.ClassId
 
 fun ModuleDescriptor.findClassAcrossModuleDependencies(classId: ClassId): ClassDescriptor? {
