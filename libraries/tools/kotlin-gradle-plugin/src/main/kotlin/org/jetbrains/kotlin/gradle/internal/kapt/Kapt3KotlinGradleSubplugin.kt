@@ -410,8 +410,11 @@ class Kapt3KotlinGradleSubplugin : KotlinGradleSubplugin<KotlinCompile> {
 
         kotlinCompilation?.run {
             output.apply {
-                addClassesDir { project.files(classesOutputDir).builtBy(kaptTask) }
-                kotlinCompile.attachClassesDir { classesOutputDir }
+                val kaptGeneratedClasses = project.files(classesOutputDir).builtBy(kaptTask)
+                addClassesDir { kaptGeneratedClasses }
+                kotlinCompile.mapClasspath {
+                    project.files(kotlinCompile.classpath).from(kaptGeneratedClasses)
+                }
             }
         }
 
