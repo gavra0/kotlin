@@ -1,5 +1,5 @@
 base-scenario {
-    tasks = [":kotlin-gradle-plugin:compileTestJava"]
+    tasks = [":kotlin-gradle-plugin:compileJava"]
     gradle-args = [
         "-Dorg.gradle.workers.max=8",
         "--parallel",

@@ -5,7 +5,7 @@
 
 allprojects {
     afterEvaluate {
-        configureJavaInstrumentation()
+        // configureJavaInstrumentation()
     }
 }
 
