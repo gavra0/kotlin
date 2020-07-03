@@ -6,19 +6,23 @@ base-scenario {
         "--watch-fs",  
     ]
     system-properties {
-        "bootstrap.kotlin.repo" = "/home/gavra/1.4.255-SNAPSHOT-master",
         "bootstrap.kotlin.default.version" = "1.4.255-SNAPSHOT",
     }
     warm-ups = 10
 }
 
-non-abi-change-stdlib = ${base-scenario} {
-    title = "Non-abi change in stdlib"
-    apply-non-abi-change-to = "libraries/stdlib/jvm/src/kotlin/io/files/FileTreeWalk.kt"
+abi-change-stdlib-master = ${base-scenario} {
+    title = "Abi change in stdlib - master"
+    apply-abi-change-to = "libraries/stdlib/jvm/src/kotlin/io/files/FileTreeWalk.kt"
+    system-properties {
+        "bootstrap.kotlin.repo" = "/home/gavra/projects/kotlin-for-benchmarking/1.4.255-SNAPSHOT-master",
+    }
 }
 
-
-abi-change-stdlib = ${base-scenario} {
-    title = "Abi change in stdlib"
+abi-change-stdlib-classpath = ${base-scenario} {
+    title = "Abi change in stdlib - compile classpath"
     apply-abi-change-to = "libraries/stdlib/jvm/src/kotlin/io/files/FileTreeWalk.kt"
+    system-properties {
+        "bootstrap.kotlin.repo" = "/home/gavra/projects/kotlin-for-benchmarking/1.4.255-SNAPSHOT-compile-classpath",
+    }
 }
