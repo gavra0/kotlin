@@ -988,6 +988,7 @@ fun Project.configureJvmProject(javaHome: String, javaVersion: String) {
 
     plugins.withId("java-base") {
         configureShadowJarSubstitutionInCompileClasspath()
+        the<JavaPluginExtension>().disableAutoTargetJvm()
     }
 }
 

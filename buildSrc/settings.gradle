@@ -1,5 +1,11 @@
 pluginManagement {
     repositories {
+        def pluginRepo = System.getProperty("bootstrap.kotlin.repo")
+        if (pluginRepo != null) {
+            maven {
+                url pluginRepo
+            }
+        }
         if (cacheRedirectorEnabled == 'true') {
             logger.info("Using cache redirector for settings.gradle pluginManagement")
             maven {
@@ -13,6 +19,12 @@ pluginManagement {
 
 buildscript {
     repositories {
+        def pluginRepo = System.getProperty("bootstrap.kotlin.repo")
+        if (pluginRepo != null) {
+            maven {
+                url pluginRepo
+            }
+        }
         if (cacheRedirectorEnabled == 'true') {
             maven { url "https://cache-redirector.jetbrains.com/kotlin.bintray.com/kotlin-dependencies" }
         } else {

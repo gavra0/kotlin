@@ -7,7 +7,12 @@ buildscript {
     extra["defaultSnapshotVersion"] = kotlinBuildProperties.defaultSnapshotVersion
     kotlinBootstrapFrom(BootstrapOption.BintrayBootstrap(kotlinBuildProperties.kotlinBootstrapVersion!!, cacheRedirectorEnabled))
 
+
     repositories {
+        project.bootstrapKotlinRepo?.let {
+            System.err.println("using the custom repo $it")
+            maven(url = it)
+        }
         if (cacheRedirectorEnabled) {
             maven("https://cache-redirector.jetbrains.com/jcenter.bintray.com")
             maven("https://cache-redirector.jetbrains.com/kotlin.bintray.com/kotlin-dependencies")
@@ -15,10 +20,7 @@ buildscript {
             jcenter()
             maven("https://kotlin.bintray.com/kotlin-dependencies")
         }
-
-        project.bootstrapKotlinRepo?.let {
-            maven(url = it)
-        }
+        
     }
 
     dependencies {
@@ -84,14 +86,14 @@ extra["versions.androidDxSources"] = "5.0.0_r2"
 extra["customDepsOrg"] = "kotlin.build"
 
 repositories {
+    extra["bootstrapKotlinRepo"]?.let {
+        maven(url = it)
+    }
     jcenter()
     maven("https://jetbrains.bintray.com/intellij-third-party-dependencies/")
     maven("https://kotlin.bintray.com/kotlin-dependencies")
     gradlePluginPortal()
 
-    extra["bootstrapKotlinRepo"]?.let {
-        maven(url = it)
-    }
 }
 
 dependencies {
