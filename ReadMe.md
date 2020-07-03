@@ -1,3 +1,16 @@
+# Used for benchmarking
+To run benchmarks, you need the following:
+
+* set environmnet variables in `gradle.properties` (`JDK_16`, `JDK_17` etc.)
+* unzip `1.4.255-SNAPSHOT-compile-classpath.zip` to e.g. `/tmp/1.4.255-SNAPSHOT-compile-classpath` - this is a version of the Kotlin Gradle plugin that uses @CompileClasspath for classpath snapshotting (built from SHA `5ec110c33fc1d0f79f8a25d50ed0871930aacd5d`)
+* unzip `1.4.255-SNAPSHOT-master.zip` to e.g. `/tmp/1.4.255-SNAPSHOT-master` - this is Kotlin Gradle plugin built from SHA `5ec110c33fc1d0f79f8a25d50ed0871930aacd5d`
+* update `performance.scenarios` to point to the appropriate Kotlin repository
+* run `cd $project_root && gradle-profiler --benchmark --project-dir ./ --scenario-file performance.scenarios abi-change-stdlib-master abi-change-stdlib-classpath abi-change-core-descriptors`
+
+Please note that this version of the project has Java instrumentation disabled as it was causing flaky compilation output (this should be investigated further).
+
+If you are interested in results they are the following (measured on Debian): `abi-change-stdlib-master` 6.1 seconds, `abi-change-stdlib-classpath` 6.1 seconds, `abi-change-core-descriptors` 18 seconds.
+
 [![official project](https://jb.gg/badges/official.svg)](https://confluence.jetbrains.com/display/ALL/JetBrains+on+GitHub)
 [![TeamCity (simple build status)](https://img.shields.io/teamcity/http/teamcity.jetbrains.com/s/Kotlin_KotlinPublic_Compiler.svg)](https://teamcity.jetbrains.com/buildConfiguration/Kotlin_KotlinPublic_Compiler?branch=%3Cdefault%3E&buildTypeTab=overview&mode=builds)
 [![Maven Central](https://img.shields.io/maven-central/v/org.jetbrains.kotlin/kotlin-maven-plugin.svg)](https://search.maven.org/#search%7Cga%7C1%7Cg%3A%22org.jetbrains.kotlin%22)

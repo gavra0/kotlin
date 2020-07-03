@@ -1,5 +1,4 @@
 base-scenario {
-    tasks = [":kotlin-gradle-plugin:compileJava"]
     gradle-args = [
         "-Dorg.gradle.workers.max=8",
         "--parallel",
@@ -12,6 +11,7 @@ base-scenario {
 }
 
 abi-change-stdlib-master = ${base-scenario} {
+    tasks = [":kotlin-gradle-plugin:compileJava"]
     title = "Abi change in stdlib - master"
     apply-abi-change-to = "libraries/stdlib/jvm/src/kotlin/io/files/FileTreeWalk.kt"
     system-properties {
@@ -20,8 +20,18 @@ abi-change-stdlib-master = ${base-scenario} {
 }
 
 abi-change-stdlib-classpath = ${base-scenario} {
+    tasks = [":kotlin-gradle-plugin:compileJava"]
     title = "Abi change in stdlib - compile classpath"
     apply-abi-change-to = "libraries/stdlib/jvm/src/kotlin/io/files/FileTreeWalk.kt"
+    system-properties {
+        "bootstrap.kotlin.repo" = "/home/gavra/projects/kotlin-for-benchmarking/1.4.255-SNAPSHOT-compile-classpath",
+    }
+}
+
+abi-change-core-descriptors = ${base-scenario} {
+    tasks = ["dist", "ideaPlugin"]
+    title = "Abi change in core.descriptors"
+    apply-abi-change-to = "core/descriptors/src/org/jetbrains/kotlin/descriptors/impl/ClassDescriptorBase.java"
     system-properties {
         "bootstrap.kotlin.repo" = "/home/gavra/projects/kotlin-for-benchmarking/1.4.255-SNAPSHOT-compile-classpath",
     }
